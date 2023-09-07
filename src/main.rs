@@ -26,7 +26,8 @@ enum Expr {
   Set(Box<Expr>, Box<Expr>),
   Dec(Vec<String>),
   Try(Box<Expr>, String),
-  Err(Box<Expr>)
+  Err(Box<Expr>),
+  Swi(Box<Expr>, Box<Expr>, Box<Expr>)
 }
 
 #[derive(Debug, Clone)]
@@ -124,7 +125,16 @@ fn parser() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
       .then(expr.clone())
       .map(|(value, expr)| Expr::Try(boxed(expr), value));
     let err = just('!').ignore_then(expr.clone()).map(|message| Expr::Err(boxed(message)));
-    let expr_atom = choice([ivk.boxed(), fun.boxed(), err.boxed(), r#try.boxed(), atom.boxed(), set.boxed(), cmt.boxed()]);
+    let swi = just('%')
+      .ignore_then(expr.clone())
+      .then_ignore(just(':'))
+      .then(
+        expr.clone()
+        .then_ignore(just('|'))
+        .then(expr.clone())
+      )
+      .map(|(cond, (truthy, falsy))| Expr::Swi(boxed(cond), boxed(truthy), boxed(falsy)));
+    let expr_atom = choice([ivk.boxed(), fun.boxed(), err.boxed(), swi.boxed(), r#try.boxed(), atom.boxed(), set.boxed(), cmt.boxed()]);
     expr_atom
   });
   expr.separated_by(just(';')).then_ignore(end())
@@ -290,7 +300,8 @@ impl Expr {
         return Ok(was_ok.into());
       },
       Expr::Dec(_) => todo!(),
-      Expr::Err(err) => throw!(ThrownError(err))
+      Expr::Err(err) => throw!(ThrownError(err)),
+      Expr::Swi(c, t, f) => if c.eval(closure)?.try_into()? { t.eval(closure)? } else { f.eval(closure)? },
     })
   }
 
