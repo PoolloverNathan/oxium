@@ -115,7 +115,7 @@ fn parser() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
       .map(|(name, value)| Expr::Set(boxed(name), boxed(value)));
     let ivk = just("*")
       .ignore_then(expr.clone())
-      .then(expr.clone().separated_by(just(',')))
+      .then(expr.clone().separated_by(just(',')).delimited_by(just('('), just(')')))
       .map(|(body, args)| Expr::Ivk(boxed(body), args));
     let fun = just('&')
       .ignore_then(
@@ -163,7 +163,7 @@ fn parser() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
   expr.separated_by(just(';')).then_ignore(end())
 }
 
-use std::{collections::HashMap, ops::{Index, Range}, iter::zip, fmt::Display, default, hash::Hash, cell::{RefCell, Ref, RefMut}, vec::IntoIter};
+use std::{collections::HashMap, iter::zip, fmt::Display, cell::{RefCell, Ref, RefMut}, str::FromStr, num::ParseFloatError};
 
 struct Closure<'a> {
   parent: Option<&'a Closure<'a>>,
@@ -237,6 +237,7 @@ enum ExceptionData {
   TypeError { expected: ValType, found: ValType },
   ArgError { expected: usize, found: usize },
   VarError(String),
+  NumError(ParseFloatError),
   ThrownError(Box<Expr>)
 }
 
@@ -258,6 +259,7 @@ impl Display for ExceptionData {
       ExceptionData::TypeError { expected, found } => write!(f, "Incorrect type (expected {expected:?}, found {found:?})"),
       ExceptionData::ArgError { expected, found } => write!(f, "Incorrect argument count (expected {expected} parameters, found {found} arguments)"),
       ExceptionData::VarError(var) => write!(f, "Could not find variable {var}"),
+      ExceptionData::NumError(err) => write!(f, "Number format error: {err}"),
       ExceptionData::ThrownError(err) => write!(f, "{:?}", err),
     }
   }
@@ -338,7 +340,9 @@ impl Expr {
       }),
       Expr::Var(name) => closure.lookup(&*name).ok_or_else(|| err!(VarError(name.clone())))?.clone(),
       Expr::Ivk(fun, args) => {
-        fun.eval(closure)?.eval_args(args, closure)?
+        let fun = fun.eval(closure)?;
+        let args = Val::eval_args(args, closure)?;
+        fun.invoke(args, &closure)?
       },
       Expr::Set(_, _) => todo!(),
       Expr::Try(run, ret) => {
@@ -368,8 +372,78 @@ impl Expr {
   // }
 }
 
+macro_rules! option_match {
+  ($pat:pat = $expr:expr => $val:expr) => {
+    match $expr {
+      $pat => Some($val),
+      _ => None
+    }
+  };
+}
+
+macro_rules! match_or_err {
+  ($pat:pat = $expr:expr => $val:expr) => {
+    match $expr {
+      $pat => Ok($val),
+      val => Err(val)
+    }
+  };
+}
+
+impl From<ParseFloatError> for Exception {
+  fn from(value: ParseFloatError) -> Self {
+    Exception { data: ExceptionData::NumError(value) }
+  }
+}
+
+impl From<String> for Val {
+  fn from(value: String) -> Self {
+    Val::Str(value)
+  }
+}
+impl From<Vec<Val>> for Val {
+  fn from(value: Vec<Val>) -> Self {
+    Val::Ary(value)
+  }
+}
+impl From<ValType> for Val {
+  fn from(value: ValType) -> Self {
+    Val::Typ(value)
+  }
+}
+impl From<Exception> for Val {
+  fn from(value: Exception) -> Self {
+    Val::Exc(value)
+  }
+}
+
 impl Val {
   fn invoke(self, args: Vec<Val>, closure: &Closure) -> Result<Val, Exception> {
+    if let Val::Str(ref data) = self {
+      if data.len() == 1 {
+        match &**data {
+          "-" => {
+            if args.len() != 2 {
+              throw!(ArgError { expected: 2, found: args.len() })
+            }
+            return if let (Val::Str(a), Val::Str(b)) = if let [a, b] = &args[..] {
+              coerce!(a => Str);
+              coerce!(b => Str);
+              (a, b)
+            } else {
+              unreachable!()
+            } {
+              let a = f64::from_str(a)?;
+              let b = f64::from_str(b)?;
+              Ok((b - a).to_string().into())
+            } else {
+              unreachable!()
+            }
+          },
+          _ => {}
+        }
+      }
+    }
     let (params, locals, body) = self.unbox_fun()?;
     if args.len() != params.len() {
       throw!(ArgError { expected: params.len(), found: args.len() })
@@ -389,12 +463,12 @@ impl Val {
     ret.clone().eval(&mut ivk_closure)
   }
 
-  fn eval_args(self, args: Vec<Expr>, closure: &mut Closure) -> Result<Val, Exception> {
+  fn eval_args(args: Vec<Expr>, closure: &mut Closure) -> Result<Vec<Val>, Exception> {
     let mut out = Vec::with_capacity(args.len());
     for arg in args {
       out.push(arg.eval(closure)?)
     }
-    Ok(Val::Ary(out))
+    Ok(out)
   }
 }
 
