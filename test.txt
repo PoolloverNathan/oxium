@@ -1,1 +1,1 @@
-*(&[a]|text|($a:text;a))("hello")
+@(,"",2,"hi")*&|val|(%val:"truthy"|"falsy")

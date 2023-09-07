@@ -12,6 +12,15 @@ macro_rules! throw {
   }
 }
 
+macro_rules! coerce {
+  ($val:expr => $ty:ident) => {
+    match $val.type_of() {
+      ValType::$ty => $val,
+      _ => throw!(TypeError { expected: ValType::$ty, found: $val.type_of() })
+    }
+  }
+}
+
 static mut COLORGEN: Lazy<ColorGenerator> = Lazy::new(|| ColorGenerator::new());
 
 macro_rules! default {
@@ -21,18 +30,21 @@ macro_rules! default {
 #[derive(Debug, Clone)]
 enum Expr {
   Val(Val),
+  Ary(Vec<Expr>),
   Var(String),
   Ivk(Box<Expr>, Vec<Expr>),
   Set(Box<Expr>, Box<Expr>),
   Dec(Vec<String>),
   Try(Box<Expr>, String),
   Err(Box<Expr>),
-  Swi(Box<Expr>, Box<Expr>, Box<Expr>)
+  Swi(Box<Expr>, Box<Expr>, Box<Expr>),
+  Eac(Box<Expr>, Box<Expr>)
 }
 
 #[derive(Debug, Clone)]
 enum Val {
   Str(String),
+  Ary(Vec<Val>),
   Fun {
     params: Vec<String>,
     locals: Vec<String>,
@@ -48,7 +60,7 @@ impl TryInto<bool> for Val {
   fn try_into(self) -> Result<bool, Self::Error> {
     match self {
       Self::Str(s) => Ok(!s.is_empty()),
-      val => throw!(TypeError { expected: ValType::Str, found: val.into() })
+      val => throw!(TypeError { expected: ValType::Str, found: val.type_of() })
     }
   }
 }
@@ -90,6 +102,12 @@ fn parser() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
       .map(|digits| Val::Str(digits).into())
     );
     let atom = atom.or(expr.clone().delimited_by(just('('), just(')')));
+    let atom = atom.or(
+      expr.clone()
+        .separated_by(just(","))
+        .delimited_by(just("(,"), just(")"))
+        .map(|items| Expr::Ary(items))
+    );
     let set = just('$')
       .ignore_then(expr.clone())
       .then_ignore(just(':'))
@@ -134,13 +152,18 @@ fn parser() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
         .then(expr.clone())
       )
       .map(|(cond, (truthy, falsy))| Expr::Swi(boxed(cond), boxed(truthy), boxed(falsy)));
-    let expr_atom = choice([ivk.boxed(), fun.boxed(), err.boxed(), swi.boxed(), r#try.boxed(), atom.boxed(), set.boxed(), cmt.boxed()]);
+    let eac = just('@')
+      .ignore_then(expr.clone())
+      .then_ignore(just('*'))
+      .then(expr.clone())
+      .map(|(list, func)| Expr::Eac(boxed(func), boxed(list))); 
+    let expr_atom = choice([ivk.boxed(), fun.boxed(), eac.boxed(), err.boxed(), swi.boxed(), r#try.boxed(), atom.boxed(), set.boxed(), cmt.boxed()]);
     expr_atom
   });
   expr.separated_by(just(';')).then_ignore(end())
 }
 
-use std::{collections::HashMap, ops::{Index, Range}, iter::zip, fmt::Display, default, hash::Hash, cell::{RefCell, Ref, RefMut}};
+use std::{collections::HashMap, ops::{Index, Range}, iter::zip, fmt::Display, default, hash::Hash, cell::{RefCell, Ref, RefMut}, vec::IntoIter};
 
 struct Closure<'a> {
   parent: Option<&'a Closure<'a>>,
@@ -190,6 +213,7 @@ impl Display for Val {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
       Val::Str(str) => write!(f, "{}", str),
+      Val::Ary(ary) => write!(f, "[{}]", ary.iter().map(|a| format!("{}", a)).collect::<Vec<String>>().join(", ")),
       Val::Fun { params, locals, body } => write!(f, "fun({}) [{}] {body:?}", params.join(", "), locals.join(", ")),
       Val::Typ(typ) => write!(f, "typ {typ:?}"),
       Val::Exc(exc) => write!(f, "Exception: {exc}"),
@@ -200,9 +224,10 @@ impl Display for Val {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ValType {
   Str,
+  Ary,
   Fun,
   Typ,
-  Exc
+  Exc,
 }
 
 // struct Frame(String, Range<usize>);
@@ -245,13 +270,49 @@ impl Display for ExceptionData {
 // }
 
 
-impl From<Val> for ValType {
-  fn from(value: Val) -> Self {
-    match value {
-        Val::Str(_) => Self::Str,
-        Val::Fun { .. } => Self::Fun,
-        Val::Typ(_) => Self::Typ,
-        Val::Exc(_) => Self::Exc,
+impl Val {
+  fn type_of(&self) -> ValType {
+    match self {
+      Self::Str(_) => ValType::Str,
+      Self::Ary(_) => ValType::Ary,
+      Self::Fun { .. } => ValType::Fun,
+      Self::Typ(_) => ValType::Typ,
+      Self::Exc(_) => ValType::Exc,
+    }
+  }
+  fn unbox_str(&self) -> Result<&String, Exception> {
+    if let Val::Str(str) = coerce!(self => Str) {
+      Ok(str)
+    } else {
+      unreachable!()
+    }
+  }
+  fn unbox_ary(&self) -> Result<&Vec<Val>, Exception> {
+    if let Val::Ary(ary) = coerce!(self => Ary) {
+      Ok(ary)
+    } else {
+      unreachable!()
+    }
+  }
+  fn unbox_fun(&self) -> Result<(&Vec<String>, &Vec<String>, &Vec<Expr>), Exception> {
+    if let Val::Fun { params, locals, body } = coerce!(self => Fun) {
+      Ok((params, locals, body))
+    } else {
+      unreachable!()
+    }
+  }
+  fn unbox_typ(&self) -> Result<&ValType, Exception> {
+    if let Val::Typ(typ) = coerce!(self => Typ) {
+      Ok(typ)
+    } else {
+      unreachable!()
+    }
+  }
+  fn unbox_exc(&self) -> Result<&Exception, Exception> {
+    if let Val::Exc(exc) = coerce!(self => Exc) {
+      Ok(exc)
+    } else {
+      unreachable!()
     }
   }
 }
@@ -268,29 +329,16 @@ impl Expr {
   fn eval(self, closure: &mut Closure) -> Result<Val, Exception> {
     Ok(match self {
       Expr::Val(val) => val,
+      Expr::Ary(items) => Val::Ary({
+        let mut out = Vec::with_capacity(items.len());
+        for item in items {
+          out.push(item.eval(closure)?);
+        }
+        out
+      }),
       Expr::Var(name) => closure.lookup(&*name).ok_or_else(|| err!(VarError(name.clone())))?.clone(),
       Expr::Ivk(fun, args) => {
-        match fun.eval(closure)? {
-          Val::Fun { params, locals, body } => {
-            if args.len() != params.len() {
-              throw!(ArgError { expected: params.len(), found: args.len() })
-            }
-            let mut vars = HashMap::<String, Val>::new();
-            for local in locals {
-              vars.insert(local, default!());
-            }
-            for (arg, param) in zip(args, params) {
-              vars.insert(param, arg.eval(closure)?);
-            }
-            let mut ivk_closure = closure.extend(vars);
-            let (ret, body) = body.split_last().expect("empty funs should be disallowed by the parser");
-            for expr in body {
-              expr.clone().eval(&mut ivk_closure)?;
-            }
-            ret.clone().eval(&mut ivk_closure)?
-          },
-          val => throw!(TypeError { expected: ValType::Fun, found: val.into() })
-        }
+        fun.eval(closure)?.eval_args(args, closure)?
       },
       Expr::Set(_, _) => todo!(),
       Expr::Try(run, ret) => {
@@ -302,12 +350,52 @@ impl Expr {
       Expr::Dec(_) => todo!(),
       Expr::Err(err) => throw!(ThrownError(err)),
       Expr::Swi(c, t, f) => if c.eval(closure)?.try_into()? { t.eval(closure)? } else { f.eval(closure)? },
+      Expr::Eac(func, list) => {
+        let list = list.eval(closure)?.unbox_ary()?.clone();
+        let func = func.eval(closure)?;
+        let func = coerce!(func => Fun);
+        let mut out = Vec::<Val>::with_capacity(list.len());
+        for item in list {
+          out.push(func.clone().invoke(vec![item], closure)?);
+        }
+        Val::Ary(out)
+      },
     })
   }
 
   // fn validate(&self) -> Vec<ValidationErr> {
     
   // }
+}
+
+impl Val {
+  fn invoke(self, args: Vec<Val>, closure: &Closure) -> Result<Val, Exception> {
+    let (params, locals, body) = self.unbox_fun()?;
+    if args.len() != params.len() {
+      throw!(ArgError { expected: params.len(), found: args.len() })
+    }
+    let mut vars = HashMap::<String, Val>::new();
+    for local in locals {
+      vars.insert(local.to_owned(), default!());
+    }
+    for (arg, param) in zip(args, params) {
+      vars.insert(param.to_owned(), arg);
+    }
+    let mut ivk_closure = closure.extend(vars);
+    let (ret, body) = body.split_last().expect("empty funs should be disallowed by the parser");
+    for expr in body {
+      expr.clone().eval(&mut ivk_closure)?;
+    }
+    ret.clone().eval(&mut ivk_closure)
+  }
+
+  fn eval_args(self, args: Vec<Expr>, closure: &mut Closure) -> Result<Val, Exception> {
+    let mut out = Vec::with_capacity(args.len());
+    for arg in args {
+      out.push(arg.eval(closure)?)
+    }
+    Ok(Val::Ary(out))
+  }
 }
 
 fn main() {
