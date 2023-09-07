@@ -1,6 +1,17 @@
 use chumsky::prelude::*;
 use once_cell::unsync::Lazy;
 
+macro_rules! err {
+  ($k:ident $data:tt) => {
+    Exception { data: ExceptionData::$k $data }
+  }
+}
+macro_rules! throw {
+  ($k:ident $data:tt) => {
+    Err(err!($k $data))?
+  }
+}
+
 static mut COLORGEN: Lazy<ColorGenerator> = Lazy::new(|| ColorGenerator::new());
 
 macro_rules! default {
@@ -13,7 +24,9 @@ enum Expr {
   Var(String),
   Ivk(Box<Expr>, Vec<Expr>),
   Set(Box<Expr>, Box<Expr>),
-  Dec(Vec<String>)
+  Dec(Vec<String>),
+  Try(Box<Expr>, String),
+  Err(Box<Expr>)
 }
 
 #[derive(Debug, Clone)]
@@ -28,11 +41,23 @@ enum Val {
   Exc(Exception)
 }
 
+impl TryInto<bool> for Val {
+  type Error = Exception;
+
+  fn try_into(self) -> Result<bool, Self::Error> {
+    match self {
+      Self::Str(s) => Ok(!s.is_empty()),
+      val => throw!(TypeError { expected: ValType::Str, found: val.into() })
+    }
+  }
+}
+
 impl Default for Val {
     fn default() -> Self {
       Self::Str("".to_string())
     }
 }
+
 impl Default for Expr {
     fn default() -> Self {
       Self::Val(default!())
@@ -94,39 +119,60 @@ fn parser() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
     let cmt = just::<_, _, Simple<char>>('#')
       .then_ignore(take_until(just('#')))
       .ignore_then(expr.clone());
-    let expr_atom = choice([ivk.boxed(), fun.boxed(), atom.boxed(), set.boxed(), cmt.boxed()]);
+    let r#try = text::ident()
+      .then_ignore(just('?'))
+      .then(expr.clone())
+      .map(|(value, expr)| Expr::Try(boxed(expr), value));
+    let err = just('!').ignore_then(expr.clone()).map(|message| Expr::Err(boxed(message)));
+    let expr_atom = choice([ivk.boxed(), fun.boxed(), err.boxed(), r#try.boxed(), atom.boxed(), set.boxed(), cmt.boxed()]);
     expr_atom
   });
   expr.separated_by(just(';')).then_ignore(end())
 }
 
-use std::{collections::HashMap, ops::{Index, Range}, iter::zip, fmt::Display, default, hash::Hash};
+use std::{collections::HashMap, ops::{Index, Range}, iter::zip, fmt::Display, default, hash::Hash, cell::{RefCell, Ref, RefMut}};
 
 struct Closure<'a> {
   parent: Option<&'a Closure<'a>>,
-  vars: HashMap<String, Val>
+  vars: RefCell<HashMap<String, Val>>
 }
 
 impl<'a> Closure<'a> {
   fn new() -> Self {
-    Self { parent: None, vars: HashMap::new() }
+    Self { parent: None, vars: RefCell::new(HashMap::new()) }
   }
 }
 impl<'b, 'a: 'b> Closure<'a> {
   fn extend(&'a self, vars: HashMap<String, Val>) -> Closure<'b> {
-    Self { parent: Some(self), vars }
+    Self { parent: Some(self), vars: RefCell::new(vars) }
   }
 }
 
 impl<'a> Closure<'a> {
-  fn lookup(&self, var: &'a str) -> Option<&Val> {
-    if let result@Some(_) = self.vars.get(var) {
-      result
+  fn find_owner(&'a self, var: &'a str) -> Option<&'a Closure<'a>> {
+    if let Some(_) = self.vars().get(var) {
+      Some(self)
+    } else if let Some(parent) = self.parent {
+      parent.find_owner(var)
+    } else {
+      None
+    }
+  }
+  fn lookup(&self, var: &'a str) -> Option<Val> {
+    let vars = self.vars();
+    if let Some(val) = vars.get(var) {
+      Some(val).cloned()
     } else if let Some(parent) = self.parent {
       parent.lookup(var)
     } else {
       None
     }
+  }
+  fn vars(&self) -> Ref<HashMap<String, Val>> {
+    self.vars.borrow()
+  }
+  fn vars_mut(&self) -> RefMut<HashMap<String, Val>> {
+    self.vars.borrow_mut()
   }
 }
 
@@ -155,7 +201,8 @@ enum ValType {
 enum ExceptionData {
   TypeError { expected: ValType, found: ValType },
   ArgError { expected: usize, found: usize },
-  VarError(String)
+  VarError(String),
+  ThrownError(Box<Expr>)
 }
 
 #[derive(Clone, Debug)]
@@ -175,7 +222,8 @@ impl Display for ExceptionData {
     match self {
       ExceptionData::TypeError { expected, found } => write!(f, "Incorrect type (expected {expected:?}, found {found:?})"),
       ExceptionData::ArgError { expected, found } => write!(f, "Incorrect argument count (expected {expected} parameters, found {found} arguments)"),
-      ExceptionData::VarError(var) => write!(f, "Could not find variable {var}")
+      ExceptionData::VarError(var) => write!(f, "Could not find variable {var}"),
+      ExceptionData::ThrownError(err) => write!(f, "{:?}", err),
     }
   }
 }
@@ -186,16 +234,6 @@ impl Display for ExceptionData {
 //   }
 // }
 
-macro_rules! err {
-  ($k:ident $data:tt) => {
-    Exception { data: ExceptionData::$k $data }
-  }
-}
-macro_rules! throw {
-  ($k:ident $data:tt) => {
-    Err(err!($k $data))?
-  }
-}
 
 impl From<Val> for ValType {
   fn from(value: Val) -> Self {
@@ -205,6 +243,12 @@ impl From<Val> for ValType {
         Val::Typ(_) => Self::Typ,
         Val::Exc(_) => Self::Exc,
     }
+  }
+}
+
+impl From<bool> for Val {
+  fn from(value: bool) -> Self {
+    Self::Str(if value { "1" } else { "" }.into())
   }
 }
 
@@ -239,7 +283,14 @@ impl Expr {
         }
       },
       Expr::Set(_, _) => todo!(),
+      Expr::Try(run, ret) => {
+        let result = run.eval(closure);
+        let was_ok = result.is_ok();
+        closure.find_owner(&ret).or(Some(&closure)).unwrap().vars_mut().insert(ret.clone(), result.unwrap_or_else(|err| Val::Exc(err)));
+        return Ok(was_ok.into());
+      },
       Expr::Dec(_) => todo!(),
+      Expr::Err(err) => throw!(ThrownError(err))
     })
   }
 
