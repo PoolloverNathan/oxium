@@ -2,13 +2,13 @@ use chumsky::prelude::*;
 use once_cell::unsync::Lazy;
 
 macro_rules! err {
-  ($k:ident $data:tt) => {
-    Exception { data: ExceptionData::$k $data }
+  ($k:ident $($data:tt)?) => {
+    Exception { data: ExceptionData::$k $($data)? }
   }
 }
 macro_rules! throw {
-  ($k:ident $data:tt) => {
-    Err(err!($k $data))?
+  ($k:ident $($data:tt)?) => {
+    Err(err!($k $($data)?))?
   }
 }
 
@@ -35,10 +35,11 @@ enum Expr {
   Ivk(Box<Expr>, Vec<Expr>),
   Set(Box<Expr>, Box<Expr>),
   Dec(Vec<String>),
-  Try(Box<Expr>, String),
+  Try(Box<Expr>, Box<Expr>),
   Err(Box<Expr>),
   Swi(Box<Expr>, Box<Expr>, Box<Expr>),
-  Eac(Box<Expr>, Box<Expr>)
+  Eac(Box<Expr>, Box<Expr>),
+  Evl(Box<Expr>)
 }
 
 #[derive(Debug, Clone)]
@@ -51,23 +52,26 @@ enum Val {
     body: Vec<Expr>
   },
   Typ(ValType),
-  Exc(Exception)
+  Exc(Exception),
+  Nil
 }
 
-impl TryInto<bool> for Val {
-  type Error = Exception;
-
-  fn try_into(self) -> Result<bool, Self::Error> {
+impl Into<bool> for &Val {
+  fn into(self) -> bool {
     match self {
-      Self::Str(s) => Ok(!s.is_empty()),
-      val => throw!(TypeError { expected: ValType::Str, found: val.type_of() })
+      Val::Str(s) => !s.is_empty(),
+      Val::Ary(a) => !a.is_empty() && !a.iter().any(Into::into),
+      Val::Fun { params, locals, body } => true,
+      Val::Typ(t) => *t != ValType::Nil,
+      Val::Exc(_) => false,
+      Val::Nil => false,
     }
   }
 }
 
 impl Default for Val {
     fn default() -> Self {
-      Self::Str("".to_string())
+      Self::Nil
     }
 }
 
@@ -105,12 +109,11 @@ fn parser() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
     let atom = atom.or(
       expr.clone()
         .separated_by(just(","))
-        .delimited_by(just("(,"), just(")"))
+        .delimited_by(just("["), just("]"))
         .map(|items| Expr::Ary(items))
     );
-    let set = just('$')
-      .ignore_then(expr.clone())
-      .then_ignore(just(':'))
+    let set = expr.clone()
+      .delimited_by(just('$'), just('='))
       .then(expr.clone())
       .map(|(name, value)| Expr::Set(boxed(name), boxed(value)));
     let ivk = just("*")
@@ -138,10 +141,10 @@ fn parser() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
     let cmt = just::<_, _, Simple<char>>('#')
       .then_ignore(take_until(just('#')))
       .ignore_then(expr.clone());
-    let r#try = text::ident()
-      .then_ignore(just('?'))
+    let r#try = expr.clone()
+      .delimited_by(just('?'), just(':'))
       .then(expr.clone())
-      .map(|(value, expr)| Expr::Try(boxed(expr), value));
+      .map(|(ret, expr)| Expr::Try(boxed(expr), boxed(ret)));
     let err = just('!').ignore_then(expr.clone()).map(|message| Expr::Err(boxed(message)));
     let swi = just('%')
       .ignore_then(expr.clone())
@@ -152,18 +155,17 @@ fn parser() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
         .then(expr.clone())
       )
       .map(|(cond, (truthy, falsy))| Expr::Swi(boxed(cond), boxed(truthy), boxed(falsy)));
-    let eac = just('@')
-      .ignore_then(expr.clone())
-      .then_ignore(just('*'))
+    let eac = expr.clone()
+      .delimited_by(just('@'), just('*'))
       .then(expr.clone())
       .map(|(list, func)| Expr::Eac(boxed(func), boxed(list))); 
     let expr_atom = choice([ivk.boxed(), fun.boxed(), eac.boxed(), err.boxed(), swi.boxed(), r#try.boxed(), atom.boxed(), set.boxed(), cmt.boxed()]);
     expr_atom
   });
-  expr.separated_by(just(';')).then_ignore(end())
+  expr.padded().separated_by(just(';')).then_ignore(end())
 }
 
-use std::{collections::HashMap, iter::zip, fmt::Display, cell::{RefCell, Ref, RefMut}, str::FromStr, num::ParseFloatError};
+use std::{collections::{HashMap, HashSet}, iter::zip, fmt::Display, cell::{RefCell, Ref, RefMut}, str::FromStr, num::ParseFloatError};
 
 struct Closure<'a> {
   parent: Option<&'a Closure<'a>>,
@@ -182,7 +184,7 @@ impl<'b, 'a: 'b> Closure<'a> {
 }
 
 impl<'a> Closure<'a> {
-  fn find_owner(&'a self, var: &'a str) -> Option<&'a Closure<'a>> {
+  fn find_owner<'b>(&'a self, var: &'b str) -> Option<&'a Closure<'a>> {
     if let Some(_) = self.vars().get(var) {
       Some(self)
     } else if let Some(parent) = self.parent {
@@ -217,6 +219,7 @@ impl Display for Val {
       Val::Fun { params, locals, body } => write!(f, "fun({}) [{}] {body:?}", params.join(", "), locals.join(", ")),
       Val::Typ(typ) => write!(f, "typ {typ:?}"),
       Val::Exc(exc) => write!(f, "Exception: {exc}"),
+      Val::Nil => write!(f, "∅")
     }
   }
 }
@@ -228,6 +231,7 @@ enum ValType {
   Fun,
   Typ,
   Exc,
+  Nil
 }
 
 // struct Frame(String, Range<usize>);
@@ -238,7 +242,9 @@ enum ExceptionData {
   ArgError { expected: usize, found: usize },
   VarError(String),
   NumError(ParseFloatError),
-  ThrownError(Box<Expr>)
+  ThrownError(Box<Expr>),
+  AssignError,
+  EvlError
 }
 
 #[derive(Clone, Debug)]
@@ -261,6 +267,8 @@ impl Display for ExceptionData {
       ExceptionData::VarError(var) => write!(f, "Could not find variable {var}"),
       ExceptionData::NumError(err) => write!(f, "Number format error: {err}"),
       ExceptionData::ThrownError(err) => write!(f, "{:?}", err),
+      ExceptionData::AssignError => write!(f, "Cannot assign to literal"),
+      ExceptionData::EvlError => write!(f, "Syntax error in ~ operator"),
     }
   }
 }
@@ -271,6 +279,14 @@ impl Display for ExceptionData {
 //   }
 // }
 
+macro_rules! extract {
+  ($output:expr, $input:expr, $pat:pat) => {
+    match $input {
+      $pat => Some($output),
+      _ => None
+    }
+  };
+}
 
 impl Val {
   fn type_of(&self) -> ValType {
@@ -280,6 +296,7 @@ impl Val {
       Self::Fun { .. } => ValType::Fun,
       Self::Typ(_) => ValType::Typ,
       Self::Exc(_) => ValType::Exc,
+      Self::Nil => ValType::Nil
     }
   }
   fn unbox_str(&self) -> Result<&String, Exception> {
@@ -321,7 +338,13 @@ impl Val {
 
 impl From<bool> for Val {
   fn from(value: bool) -> Self {
-    Self::Str(if value { "1" } else { "" }.into())
+    value.then(|| String::new()).into()
+  }
+}
+
+impl<T> From<Option<T>> for Val where T: Into<Val> {
+  fn from(value: Option<T>) -> Self {
+      return value.map_or(Val::Nil, Into::into)
   }
 }
 
@@ -344,16 +367,18 @@ impl Expr {
         let args = Val::eval_args(args, closure)?;
         fun.invoke(args, &closure)?
       },
-      Expr::Set(_, _) => todo!(),
+      Expr::Set(name, value) => {
+        name.assign(value.eval(closure)?, closure)?
+      },
       Expr::Try(run, ret) => {
         let result = run.eval(closure);
         let was_ok = result.is_ok();
-        closure.find_owner(&ret).or(Some(&closure)).unwrap().vars_mut().insert(ret.clone(), result.unwrap_or_else(|err| Val::Exc(err)));
+        ret.assign(result.unwrap_or_else(|e| Val::Exc(e).into()), closure)?;
         return Ok(was_ok.into());
       },
       Expr::Dec(_) => todo!(),
       Expr::Err(err) => throw!(ThrownError(err)),
-      Expr::Swi(c, t, f) => if c.eval(closure)?.try_into()? { t.eval(closure)? } else { f.eval(closure)? },
+      Expr::Swi(c, t, f) => if (&c.eval(closure)?).into() { t.eval(closure)? } else { f.eval(closure)? },
       Expr::Eac(func, list) => {
         let list = list.eval(closure)?.unbox_ary()?.clone();
         let func = func.eval(closure)?;
@@ -364,7 +389,43 @@ impl Expr {
         }
         Val::Ary(out)
       },
+      Expr::Evl(code) => todo!()
     })
+  }
+
+  fn assign(self, value: Val, closure: &mut Closure) -> Result<Val, Exception> {
+    match self {
+        Expr::Val(_) => throw!(AssignError),
+        Expr::Ary(t) => {
+          let items = extract!(items, coerce!(value => Ary), Val::Ary(items)).unwrap();
+          if items.len() == t.len() {
+            Val::assign_args(t, items, closure)
+          } else {
+            throw!(ArgError { expected: items.len(), found: t.len() })
+          }
+        },
+        Expr::Var(name) => {
+          let owner = closure.find_owner(&name).unwrap_or(closure);
+          Ok(owner.vars_mut().insert(name, value).unwrap_or(Val::Nil))
+        },
+        Expr::Ivk(_, _) => throw!(AssignError),
+        Expr::Set(target, extra) => {
+          target.assign(extra.assign(value, closure)?, closure)
+        },
+        Expr::Dec(_) => todo!(),
+        Expr::Try(expr, ret) => {
+          let result = expr.assign(value, closure);
+          let was_ok = result.is_ok();
+          ret.assign(result.unwrap_or_else(|e| Val::Exc(e).into()), closure)?;
+          Ok(was_ok.into())
+        },
+        Expr::Err(_) => throw!(AssignError),
+        Expr::Swi(cond, t, f) => {
+          (if (&cond.eval(closure)?).into() { t } else { f }).assign(value, closure)
+        },
+        Expr::Eac(_, _) => throw!(AssignError),
+        Expr::Evl(code) => todo!()
+    }
   }
 
   // fn validate(&self) -> Vec<ValidationErr> {
@@ -470,6 +531,13 @@ impl Val {
     }
     Ok(out)
   }
+  fn assign_args(args: Vec<Expr>, vals: Vec<Val>, closure: &mut Closure) -> Result<Val, Exception> {
+    let mut out = Vec::with_capacity(args.len());
+    for (arg, val) in zip(args, vals) {
+      out.push(arg.assign(val, closure)?);
+    }
+    Ok(out.into())
+  }
 }
 
 fn main() {
@@ -501,9 +569,15 @@ fn main() {
                 }
               ))
           );
-        for expect in err.expected() {
-          /* todo */
-        }
+        let mut expected: HashSet<Option<char>> = err.expected().copied().collect();
+        let allow_eof = expected.remove(&None);
+        let expected: String = expected.into_iter().map(Option::unwrap).collect();
+        report.set_help(match (expected.len(), allow_eof) {
+          (0, false) => "no characters are allowed here".to_owned(),
+          (_, false) => format!("expected '{expected}'"),
+          (0, true) => format!("expected end of input"),
+          (_, true) => format!("expected '{expected}' or end of input")
+        })
       }
       report.finish().print((filename, Source::from(src))).expect("Failed to print parse failure")
     }
