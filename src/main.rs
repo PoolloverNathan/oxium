@@ -1,4 +1,4 @@
-use chumsky::{prelude::*, Span};
+use chumsky::{prelude::*, Span, text::whitespace};
 use once_cell::unsync::Lazy;
 
 macro_rules! err {
@@ -168,11 +168,12 @@ fn parser<'a>(filename: &'a str) -> impl Parser<char, Vec<Expr>, Error = Simple<
     let expr_atom = choice([ivk.boxed(), fun.boxed(), eac.boxed(), err.boxed(), swi.boxed(), r#try.boxed(), atom.boxed(), set.boxed(), cmt.boxed()]);
     expr_atom
   });
-  expr.padded().separated_by(just(';')).then_ignore(end())
+  expr.padded_by(just('.').repeated()).separated_by(just(';')).then_ignore(end())
 }
 
 use std::{collections::{HashMap, HashSet}, iter::zip, fmt::Display, cell::{RefCell, Ref, RefMut}, str::FromStr, num::{ParseFloatError}, ops::Range, process::ExitCode};
 
+#[derive(Debug, Default)]
 struct Closure<'a> {
   parent: Option<&'a Closure<'a>>,
   vars: RefCell<HashMap<String, Val>>
