@@ -1,4 +1,5 @@
 use super::*;
+use std::convert::Infallible as No;
 
 #[derive(Debug, Clone)]
 pub enum Val {
@@ -11,6 +12,18 @@ pub enum Val {
   },
   Typ(ValType),
   Exc(Exception),
+  Thr(No),
+  Nil
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValType {
+  Str,
+  Ary,
+  Fun,
+  Typ,
+  Exc,
+  Thr,
   Nil
 }
 
@@ -22,6 +35,7 @@ impl Val {
       Self::Fun { .. } => ValType::Fun,
       Self::Typ(_) => ValType::Typ,
       Self::Exc(_) => ValType::Exc,
+      Self::Thr(_) => ValType::Thr,
       Self::Nil => ValType::Nil
     }
   }
@@ -165,6 +179,7 @@ impl Into<bool> for &Val {
       Val::Fun { .. } => true,
       Val::Typ(t) => *t != ValType::Nil,
       Val::Exc(_) => false,
+      Val::Thr(_) => todo!(),
       Val::Nil => false,
     }
   }
@@ -184,17 +199,8 @@ impl Display for Val {
       Val::Fun { params, locals, body } => write!(f, "fun({}) [{}] {body:?}", params.join(", "), locals.join(", ")),
       Val::Typ(typ) => write!(f, "<{typ:?}>"),
       Val::Exc(exc) => write!(f, "[E{:08}: {exc}]", exc.data.code()),
+      Val::Thr(_) => todo!(),
       Val::Nil => write!(f, "∅")
     }
   }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ValType {
-  Str,
-  Ary,
-  Fun,
-  Typ,
-  Exc,
-  Nil
 }

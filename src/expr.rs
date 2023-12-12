@@ -14,6 +14,7 @@ pub enum Expr {
   Err(Origin, Box<Expr>),
   Swi(Origin, Box<Expr>, Box<Expr>, Box<Expr>),
   Eac(Origin, Box<Expr>, Box<Expr>),
+  Yld(Origin, Box<Expr>),
   Evl(Origin, Box<Expr>)
 }
 
@@ -62,7 +63,8 @@ impl Expr {
         }
         Val::Ary(out)
       },
-      Expr::Evl(span, code) => todo!()
+      Expr::Yld(span, val) => todo!(),
+      Expr::Evl(span, code) => todo!(),
     })
   }
 
@@ -97,7 +99,8 @@ impl Expr {
           (if (&cond.eval(closure)?).into() { t } else { f }).assign(value, closure)
         },
         Expr::Eac(span, _, _) => throw!(span, AssignError),
-        Expr::Evl(span, code) => todo!()
+        Expr::Yld(span, val) => todo!(),
+        Expr::Evl(span, code) => todo!(),
     }
   }
 
