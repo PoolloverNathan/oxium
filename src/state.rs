@@ -7,7 +7,7 @@ macro_rules! defaulted {
 #[macro_export]
 macro_rules! state_machine {
   (
-    $($(#[$tmeta:meta])* $tvis:vis enum)? $name:ident$([$g])?$(($($garg:ident: $gty:ty),* $(,)?))?;
+    $($(#[$tmeta:meta])* $tvis:vis enum)? $name:ident$(<$($typar:ident),+>)? $(where {$($where:tt)+})? $(($($garg:ident: $gty:ty),* $(,)?))?;
 
     $(#[$fmeta:meta])* $fvis:vis fn $stepfn:ident(self $(, $arg:ident: $argty:ty)* $(,)?) $(-> $rty:ty)?;
 
@@ -15,12 +15,12 @@ macro_rules! state_machine {
       $(#[$imeta:meta])* $item:ident$(($($iarg:ident: $ity:ty),* $(,)?))? => $ivalue:expr;
     )*
   ) => {
-    $($(#[$tmeta])* $tvis)? enum $name {
+    $($(#[$tmeta])* $tvis)? enum $name $(<$($typar:ident),+>)? $(where $($where:tt)+)? {
       $(
         $(#[$imeta])* $item($($($garg: $gty, )*)? $($($iarg: $ity, )*)?)
       ),*
     }
-    impl $name {
+    impl $(<$($typar:ident),+>)? $name $(<$($typar:ident),+>)? $(where $($where:tt)+)? {
       $(#[$fmeta])* $fvis fn $stepfn(self $(, $arg: $argty)*) defaulted!((-> $name) $(-> $rty:ty)?) {
         match self {
           $(
