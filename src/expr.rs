@@ -104,6 +104,24 @@ impl Expr {
     }
   }
 
+  pub fn origin(&self) -> &Origin {
+    match self {
+      | Expr::Val(o, _)
+      | Expr::Ary(o, _)
+      | Expr::Var(o, _)
+      | Expr::Ivk(o, _, _)
+      | Expr::Set(o, _, _)
+      | Expr::Dec(o, _)
+      | Expr::Try(o, _, _)
+      | Expr::Err(o, _)
+      | Expr::Swi(o, _, _, _)
+      | Expr::Eac(o, _, _)
+      | Expr::Yld(o, _)
+      | Expr::Evl(o, _)
+      => o
+    }
+  }
+
   // fn validate(&self) -> Vec<ValidationErr> {
     
   // }
