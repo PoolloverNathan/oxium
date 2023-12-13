@@ -111,31 +111,31 @@ impl<T> From<Option<T>> for Val where T: Into<Val> {
 
 impl Val {
   pub fn invoke(self, span: Origin, args: Vec<Val>, closure: &Closure) -> Result<Val, Exception> {
-    if let Val::Str(ref data) = self {
-      if data.len() == 1 {
-        match &**data {
-          "-" => {
-            if args.len() != 2 {
-              throw!(span.clone(), ArgError { expected: 2, found: args.len() })
-            }
-            return if let (Val::Str(a), Val::Str(b)) = if let [a, b] = &args[..] {
-              coerce!(span.clone(), a => Str);
-              coerce!(span.clone(), b => Str);
-              (a, b)
-            } else {
-              unreachable!()
-            } {
-              let a = f64::from_str(a).map_err(|e| err!(span.clone(), NumError(e)))?;
-              let b = f64::from_str(b).map_err(|e| err!(span.clone(), NumError(e)))?;
-              Ok((b - a).to_string().into())
-            } else {
-              unreachable!()
-            }
-          },
-          _ => {}
-        }
-      }
-    }
+    // if let Val::Str(ref data) = self {
+    //   if data.len() == 1 {
+    //     match &**data {
+    //       "-" => {
+    //         if args.len() != 2 {
+    //           throw!(span.clone(), ArgError { expected: 2, found: args.len() })
+    //         }
+    //         return if let (Val::Str(a), Val::Str(b)) = if let [a, b] = &args[..] {
+    //           coerce!(span.clone(), a => Str);
+    //           coerce!(span.clone(), b => Str);
+    //           (a, b)
+    //         } else {
+    //           unreachable!()
+    //         } {
+    //           let a = f64::from_str(a).map_err(|e| err!(span.clone(), NumError(e)))?;
+    //           let b = f64::from_str(b).map_err(|e| err!(span.clone(), NumError(e)))?;
+    //           Ok((b - a).to_string().into())
+    //         } else {
+    //           unreachable!()
+    //         }
+    //       },
+    //       _ => {}
+    //     }
+    //   }
+    // }
     let (params, locals, body) = self.unbox_fun(span.clone())?;
     if args.len() != params.len() {
       throw!(span.clone(), ArgError { expected: params.len(), found: args.len() })
