@@ -220,9 +220,9 @@ fn main() -> ExitCode {
   println!("parsing");
   match parser(filename).parse(src.clone()) {
     Ok(exprs) => {
-      let mut closure = Closure::new();
+      let closure = Closure::new();
       for expr in exprs {
-        match expr.eval(&mut closure) {
+        match expr.eval(&closure) {
           Ok(val) => println!("{}", val),
           Err(Exception { data, traceback }) => {
             let mut report = Report::build(ReportKind::Error, filename, 0)

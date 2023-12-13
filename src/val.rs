@@ -155,14 +155,14 @@ impl Val {
     ret.clone().eval(&mut ivk_closure).with_frame(span)
   }
 
-  pub fn eval_args(args: Vec<Expr>, closure: &mut Closure) -> Result<Vec<Val>, Exception> {
+  pub fn eval_args(args: Vec<Expr>, closure: &Closure) -> Result<Vec<Val>, Exception> {
     let mut out = Vec::with_capacity(args.len());
     for arg in args {
       out.push(arg.eval(closure)?)
     }
     Ok(out)
   }
-  pub fn assign_args(args: Vec<Expr>, vals: Vec<Val>, closure: &mut Closure) -> Result<Val, Exception> {
+  pub fn assign_args(args: Vec<Expr>, vals: Vec<Val>, closure: &Closure) -> Result<Val, Exception> {
     let mut out = Vec::with_capacity(args.len());
     for (arg, val) in zip(args, vals) {
       out.push(arg.assign(val, closure)?);

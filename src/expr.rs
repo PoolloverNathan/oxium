@@ -25,7 +25,7 @@ impl From<(Origin, Val)> for Expr {
 }
 
 impl Expr {
-  pub fn eval(self, closure: &mut Closure) -> Result<Val, Exception> {
+  pub fn eval(self, closure: &Closure) -> Result<Val, Exception> {
     Ok(match self {
       Expr::Val(span, val) => val,
       Expr::Ary(span, items) => Val::Ary({
@@ -68,7 +68,7 @@ impl Expr {
     })
   }
 
-  pub fn assign(self, value: Val, closure: &mut Closure) -> Result<Val, Exception> {
+  pub fn assign(self, value: Val, closure: &Closure) -> Result<Val, Exception> {
     match self {
         Expr::Val(span, _) => throw!(span, AssignError),
         Expr::Ary(span, t) => {
