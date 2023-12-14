@@ -4,6 +4,7 @@ mod expr; use expr::*;
 mod val; use val::*;
 #[macro_use] mod state;
 mod parser; use parser::*;
+mod request; use request::*;
 
 #[macro_export]
 macro_rules! err {
