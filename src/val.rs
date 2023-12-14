@@ -110,7 +110,7 @@ impl<T> From<Option<T>> for Val where T: Into<Val> {
 }
 
 impl Val {
-  pub fn invoke(self, span: Origin, args: Vec<Val>, closure: &Closure) -> Result<Val, Exception> {
+  pub async fn invoke(self, span: Origin, args: Vec<Val>, closure: &Closure<'_>) -> Result<Val, Exception> {
     // if let Val::Str(ref data) = self {
     //   if data.len() == 1 {
     //     match &**data {
@@ -147,25 +147,25 @@ impl Val {
     for (arg, param) in zip(args, params) {
       vars.insert(param.to_owned(), arg);
     }
-    let mut ivk_closure = closure.extend(vars);
+    let ref ivk_closure = closure.extend(vars);
     let (ret, body) = body.split_last().expect("empty funs should be disallowed by the parser");
     for expr in body {
-      expr.clone().eval(&mut ivk_closure).with_frame(span.clone())?;
+      expr.clone().eval(ivk_closure).await.with_frame(span.clone())?;
     }
-    ret.clone().eval(&mut ivk_closure).with_frame(span)
+    ret.clone().eval(ivk_closure).await.with_frame(span)
   }
 
-  pub fn eval_args(args: Vec<Expr>, closure: &Closure) -> Result<Vec<Val>, Exception> {
+  pub async fn eval_args(args: Vec<Expr>, closure: &Closure<'_>) -> Result<Vec<Val>, Exception> {
     let mut out = Vec::with_capacity(args.len());
     for arg in args {
-      out.push(arg.eval(closure)?)
+      out.push(arg.eval(closure).await?)
     }
     Ok(out)
   }
-  pub fn assign_args(args: Vec<Expr>, vals: Vec<Val>, closure: &Closure) -> Result<Val, Exception> {
+  pub async fn assign_args(args: Vec<Expr>, vals: Vec<Val>, closure: &Closure<'_>) -> Result<Val, Exception> {
     let mut out = Vec::with_capacity(args.len());
     for (arg, val) in zip(args, vals) {
-      out.push(arg.assign(val, closure)?);
+      out.push(arg.assign(val, closure).await?);
     }
     Ok(out.into())
   }

@@ -1,3 +1,5 @@
+#![allow(warnings)]
+
 use chumsky::{prelude::*, Span};
 use once_cell::unsync::Lazy;
 mod expr; use expr::*;
@@ -215,6 +217,32 @@ fn with_span<F: WithSpan<S, T>, T: From<(S, F)>, S: Span>(span: S) -> impl Fn(F)
   move |value| value.with_span(span.clone())
 }
 
+fn run_thread<F: Future>(future: F) -> F::Output {
+  use std::task::{*, Poll::*};
+  /// stolen from Waker::noop() — what's unstable about this?
+  pub fn waker_noop() -> Waker {
+    const VTABLE: RawWakerVTable = RawWakerVTable::new(
+      // Cloning just returns a new no-op raw waker
+      |_| RAW,
+      // `wake` does nothing
+      |_| {},
+      // `wake_by_ref` does nothing
+      |_| {},
+      // Dropping does nothing as we don't allocate anything
+      |_| {},
+    );
+    const RAW: RawWaker = RawWaker::new(std::ptr::null(), &VTABLE);
+
+    unsafe { Waker::from_raw(RAW) }
+  }
+  let waker = waker_noop();
+  let mut waker = Context::from_waker(&waker);
+  match pin!(future).poll(&mut waker) {
+    Ready(value) => value,
+    Waiting => todo!("yielding threads not implemented"),
+  }
+}
+
 fn main() -> ExitCode {
   let filename = "test.txt";
   let src = std::fs::read_to_string(filename).expect("Example file should be readable");
@@ -223,7 +251,7 @@ fn main() -> ExitCode {
     Ok(exprs) => {
       let closure = Closure::new();
       for expr in exprs {
-        match expr.eval(&closure) {
+        match run_thread(expr.eval(&closure)) {
           Ok(val) => println!("{}", val),
           Err(Exception { data, traceback }) => {
             let mut report = Report::build(ReportKind::Error, filename, 0)
