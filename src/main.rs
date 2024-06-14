@@ -244,12 +244,19 @@ fn run_thread<F: Future>(future: F) -> F::Output {
 }
 
 fn main() -> ExitCode {
-  let src = std::fs::read_to_string({
-    let mut a = env::args();
-    a.next();
-    a.next.unwrap_or_else("/dev/stdin")
-  }).expect("cannot open source file");
-  println!("parsing");
+  let mut a = std::env::args();
+  a.next();
+  let filename = a.next();
+  let filename = match &filename {
+    Some(filename) => filename,
+    None => "/dev/stdin",
+  };
+  drop(a);
+  let mut src = std::fs::read_to_string(filename).expect("cannot open source file");
+  match src.pop() {
+    Some('\n') | None => {}
+    Some(c) => src.push(c)
+  };
   match parser(filename).parse(src.clone()) {
     Ok(exprs) => {
       let closure = Closure::new();
