@@ -244,8 +244,11 @@ fn run_thread<F: Future>(future: F) -> F::Output {
 }
 
 fn main() -> ExitCode {
-  let filename = "test.txt";
-  let src = std::fs::read_to_string(filename).expect("Example file should be readable");
+  let src = std::fs::read_to_string({
+    let mut a = env::args();
+    a.next();
+    a.next.unwrap_or_else("/dev/stdin")
+  }).expect("cannot open source file");
   println!("parsing");
   match parser(filename).parse(src.clone()) {
     Ok(exprs) => {
